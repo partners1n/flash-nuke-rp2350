@@ -40,6 +40,3 @@ target_link_libraries(flash_nuke
 
 # สร้างไฟล์ .uf2, .elf, .bin, .hex
 pico_add_extra_outputs(flash_nuke)
-
-# แสดงข้อมูลหน่วยความจำหลัง build
-pico_print_memory_usage(flash_nuke)
