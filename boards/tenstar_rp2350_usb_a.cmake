@@ -1,0 +1,16 @@
+# Tenstar RP2350 USB-A — 128 MB Flash
+set(PICO_BOARD tenstar_rp2350_usb_a)
+
+# Chip
+set(PICO_PLATFORM rp2350)
+set(PICO_CHIP rp2350)
+
+# CPU / RAM
+set(PICO_DEFAULT_FLASH_SIZE 134217728)   # 128 MB
+
+# LED
+set(PICO_DEFAULT_LED_PIN 22)
+set(PICO_DEFAULT_WS2812_PIN 22)
+
+# Boot stage2 for 128MB flash
+set(PICO_DEFAULT_BOOT_STAGE2 flash_128kB)
