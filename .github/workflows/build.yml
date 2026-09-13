@@ -1,0 +1,78 @@
+name: Build flash_nuke UF2
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          fetch-depth: 1
+
+      - name: Generate version
+        id: ver
+        run: |
+          BUILD_NUM="${{ github.run_number }}"
+          DATE_TAG=$(date -u +%Y%m%d)
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          FULL_VER="v0.1.${BUILD_NUM}+${DATE_TAG}.${SHORT_SHA}"
+          echo "full=$FULL_VER"    >> $GITHUB_OUTPUT
+          echo "build=$BUILD_NUM"  >> $GITHUB_OUTPUT
+          echo "🔖 Version: $FULL_VER"
+
+      - name: Install ARM toolchain & CMake
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc-arm-none-eabi build-essential libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+
+      - name: Clone Pico SDK
+        run: |
+          git clone https://github.com/raspberrypi/pico-sdk.git
+          cd pico-sdk
+          git checkout 2.1.1
+          git submodule update --init
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build \
+            -DPICO_BOARD=pico2 \
+            -DPICO_PLATFORM=rp2350 \
+            -DPICO_SDK_PATH=${{ github.workspace }}/pico-sdk \
+            -DNUKE_VERSION="${{ steps.ver.outputs.full }}"
+
+      - name: Build flash_nuke
+        run: cmake --build build -j$(nproc)
+
+      - name: Rename UF2 with version
+        run: |
+          SRC=build/flash_nuke.uf2
+          DST="build/flash_nuke-${{ steps.ver.outputs.full }}.uf2"
+          mv "$SRC" "$DST"
+          ls -lh build/*.uf2
+          echo "UF2=$DST" >> $GITHUB_ENV
+
+      - name: Upload UF2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flash_nuke-${{ steps.ver.outputs.full }}
+          path: build/*.uf2
+          retention-days: 90
+
+      - name: Upload to Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/*.uf2
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
