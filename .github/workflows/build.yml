@@ -1,19 +1,173 @@
-- name: Configure CMake
-  run: |
-    cmake -S . -B build \
-      -DPICO_BOARD=pico2 \
-      -DPICO_PLATFORM=rp2350 \
-      -DPICO_SDK_PATH=${{ github.workspace }}/pico-sdk \
-      -DNUKE_VERSION="${{ steps.ver.outputs.full }}"
+name: Build flash_nuke UF2
 
-- name: Build flash_nuke
-  run: cmake --build build -j$(nproc)
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 
-- name: Verify UF2 size
-  run: |
-    UF2=build/flash_nuke.uf2
-    SIZE=$(stat -c%s "$UF2")
-    echo "UF2 size: $((SIZE/1024)) KB"
-    # ต้องไม่เกิน 1 MB (sanity check)
-    [ "$SIZE" -lt 1048576 ] || { echo "UF2 ใหญ่เกิน!"; exit 1; }
-    arm-none-eabi-size build/flash_nuke.elf
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ============================================================
+      # 1) Checkout
+      # ============================================================
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          fetch-depth: 1
+
+      # ============================================================
+      # 2) Generate version (auto-increment)
+      # ============================================================
+      - name: Generate version
+        id: ver
+        run: |
+          BUILD_NUM="${{ github.run_number }}"
+          DATE_TAG=$(date -u +%Y%m%d)
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          FULL_VER="v0.1.${BUILD_NUM}+${DATE_TAG}.${SHORT_SHA}"
+
+          echo "full=$FULL_VER"    >> $GITHUB_OUTPUT
+          echo "build=$BUILD_NUM"  >> $GITHUB_OUTPUT
+          echo "date=$DATE_TAG"    >> $GITHUB_OUTPUT
+          echo "sha=$SHORT_SHA"    >> $GITHUB_OUTPUT
+          echo "🔖 Version: $FULL_VER"
+
+      # ============================================================
+      # 3) Install toolchain
+      # ============================================================
+      - name: Install ARM toolchain & CMake
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            gcc-arm-none-eabi \
+            build-essential \
+            libnewlib-arm-none-eabi \
+            libstdc++-arm-none-eabi-newlib \
+            python3
+
+      # ============================================================
+      # 4) Clone Pico SDK (pin version)
+      # ============================================================
+      - name: Clone Pico SDK
+        run: |
+          git clone https://github.com/raspberrypi/pico-sdk.git
+          cd pico-sdk
+          git checkout 2.1.1
+          git submodule update --init
+
+      # ============================================================
+      # 5) Configure CMake — สำหรับ Tenstar RP2350 USB-A 128 MB
+      # ============================================================
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build \
+            -DPICO_BOARD=pico2 \
+            -DPICO_PLATFORM=rp2350 \
+            -DPICO_SDK_PATH=${{ github.workspace }}/pico-sdk \
+            -DNUKE_VERSION="${{ steps.ver.outputs.full }}"
+
+      # ============================================================
+      # 6) Build
+      # ============================================================
+      - name: Build flash_nuke
+        run: cmake --build build -j$(nproc)
+
+      # ============================================================
+      # 7) Verify output
+      # ============================================================
+      - name: Verify firmware
+        run: |
+          set -e
+          echo "::group::Firmware size"
+          arm-none-eabi-size build/flash_nuke.elf
+          echo "::endgroup::"
+
+          echo "::group::UF2 info"
+          UF2=build/flash_nuke.uf2
+          if [ ! -f "$UF2" ]; then
+            echo "::error::flash_nuke.uf2 not found!"
+            exit 1
+          fi
+          SIZE=$(stat -c%s "$UF2")
+          echo "UF2 size: $((SIZE/1024)) KB ($SIZE bytes)"
+          # sanity: UF2 ต้องเล็กกว่า 1 MB
+          if [ "$SIZE" -ge 1048576 ]; then
+            echo "::error::UF2 ใหญ่เกิน 1 MB — ผิดปกติ"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Flash size in binary"
+          grep -a "Flash size" build/flash_nuke.elf || true
+          echo "::endgroup::"
+
+      # ============================================================
+      # 8) Rename with version
+      # ============================================================
+      - name: Rename UF2 with version
+        run: |
+          SRC=build/flash_nuke.uf2
+          DST="build/flash_nuke-${{ steps.ver.outputs.full }}.uf2"
+          mv "$SRC" "$DST"
+          ls -lh build/*.uf2
+          echo "UF2=$DST" >> $GITHUB_ENV
+
+      # ============================================================
+      # 9) Upload artifact
+      # ============================================================
+      - name: Upload UF2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flash_nuke-${{ steps.ver.outputs.full }}
+          path: build/*.uf2
+          retention-days: 90
+          if-no-files-found: error
+
+      # ============================================================
+      # 10) Upload to Release (เฉพาะเมื่อ push tag v*)
+      # ============================================================
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/*.uf2
+          generate_release_notes: true
+          body: |
+            ## flash_nuke ${{ steps.ver.outputs.full }}
+
+            เฟิร์มแวร์ล้าง Flash ทั้งชิป RP2350 (128 MB)
+
+            **วิธีใช้:**
+            1. กด BOOTSEL ค้างไว้ แล้วเสียบ USB
+            2. ลาก `flash_nuke-*.uf2` ไปวางในไดรฟ์ `RP2350`
+            3. รอ 40-90 วินาที — บอร์ดจะ reboot เข้า bootloader อีกครั้ง
+            4. ลากเฟิร์มแวร์จริงที่ต้องการลงไป
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ============================================================
+      # 11) สร้าง tag อัตโนมัติเมื่อ push main (optional)
+      # ============================================================
+      - name: Create version tag
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          TAG="v0.1.${{ steps.ver.outputs.build }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # ตรวจว่า tag นี้มีอยู่แล้วหรือยัง
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG มีอยู่แล้ว — ข้าม"
+            exit 0
+          fi
+
+          git tag -a "$TAG" -m "Release ${{ steps.ver.outputs.full }}"
+          git push origin "$TAG" || echo "::warning::push tag failed (อาจเป็น permission)"
